@@ -1,60 +1,72 @@
-#!/usr/bin/env python3
-
 import docker
 import json
-from datetime import datetime
-from pathlib import Path
-import pytz
+import datetime
+import os
+
+LOGS_DIR = "logs"
+TARGET_CONTAINER = "cijferlijst"
 
 
-def get_container_stats(container):
-    try:
-        stats = container.stats(stream=False)
-        cpu_usage = stats["cpu_stats"]["cpu_usage"]["total_usage"]
-        mem_usage = stats["memory_stats"]["usage"]
-        return cpu_usage, mem_usage
-    except Exception:
-        return None, None
-
-
-def main():
+def get_container_status():
     client = docker.from_env()
-
-    # Base folder of the project
-    base_dir = Path(__file__).resolve().parent.parent
-    logs_dir = base_dir / "logs"
-    logs_dir.mkdir(exist_ok=True)
-
-    # Local timestamp (Netherlands)
-    tz = pytz.timezone("Europe/Amsterdam")
-    now_local = datetime.now(tz)
+    containers = client.containers.list(all=True)
 
     data = {
-        "timestamp": now_local.isoformat(),
+        "timestamp": datetime.datetime.now().isoformat(),
         "containers": []
     }
 
-    for container in client.containers.list(all=True):
-        cpu, mem = get_container_stats(container)
+    for c in containers:
         info = {
-            "id": container.short_id,
-            "name": container.name,
-            "status": container.status,
-            "image": container.image.tags[0] if container.image.tags else "unknown",
-            "cpu_usage": cpu,
-            "mem_usage": mem,
-            "ports": container.attrs["NetworkSettings"]["Ports"]
+            "id": c.id[:12],
+            "name": c.name,
+            "image": c.image.tags,
+            "status": c.status,
+            "created": c.attrs.get("Created"),
+            "ports": c.attrs.get("NetworkSettings", {}).get("Ports", {})
         }
+
+        # Healthcheck (si existe)
+        health = c.attrs.get("State", {}).get("Health")
+        if health:
+            info["health"] = health.get("Status")
+        else:
+            info["health"] = "no healthcheck"
+
+        # Marcar si es el contenedor principal que nos interesa
+        info["is_cijferlijst"] = (c.name == TARGET_CONTAINER)
+
         data["containers"].append(info)
 
-    # Local timestamp in filename
-    filename = logs_dir / f"status_{now_local.strftime('%Y%m%d_%H%M%S')}.json"
+    return data
 
-    with filename.open("w") as f:
+
+def save_to_json(data):
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    now = datetime.datetime.now()
+    filename = os.path.join(
+        LOGS_DIR,
+        f"status_{now.strftime('%Y%m%d-%H%M%S')}.json"
+    )
+    with open(filename, "w") as f:
         json.dump(data, f, indent=4)
 
-    print(f"✔ Status exported to: {filename}")
+    print(f"[STATUS] Log saved → {filename}")
+
+
+def print_summary(data):
+    print("\n=== CONTAINER STATUS SUMMARY ===")
+    for c in data["containers"]:
+        mark = "[TARGET]" if c["is_cijferlijst"] else "        "
+        print(
+            f"{mark} {c['name']:<15} "
+            f"status={c['status']:<10} "
+            f"health={c['health']}"
+        )
 
 
 if __name__ == "__main__":
-    main()
+    print("[STATUS] Collecting container information...")
+    status_data = get_container_status()
+    save_to_json(status_data)
+    print_summary(status_data)
