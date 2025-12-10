@@ -1,112 +1,128 @@
-#!/usr/bin/env python3
-
-import docker
+import subprocess
+import datetime
 import json
-import time
-from datetime import datetime
-from pathlib import Path
-import pytz
+import os
+
+LOGS_DIR = "logs"
+CONTAINER_NAME = "cijferlijst"
+IMAGE_NAME = "ezzoreon/cijferlijst:latest"
+HOST_PORT = 80
+CONTAINER_PORT = 5000
 
 
-def recreate_container(client, container):
-    inspect = client.api.inspect_container(container.id)
-
-    name = inspect["Name"].lstrip("/")
-    image = inspect["Config"]["Image"]
-    env = inspect["Config"].get("Env", [])
-
-    # Ports
-    ports_cfg = inspect["NetworkSettings"]["Ports"] or {}
-    port_bindings = {}
-    for port_proto, bindings in ports_cfg.items():
-        if bindings:
-            host_port = bindings[0]["HostPort"]
-            port_bindings[port_proto] = host_port
-
-    # Volumes
-    mounts = inspect.get("Mounts", [])
-    volume_bindings = {}
-    for m in mounts:
-        if m.get("Type") == "volume":
-            volume_bindings[m["Name"]] = {
-                "bind": m["Destination"],
-                "mode": "rw" if m.get("RW", True) else "ro"
-            }
-
-    container.stop()
-    container.remove()
-
-    new_container = client.containers.run(
-        image=image,
-        name=name,
-        detach=True,
-        ports=port_bindings,
-        volumes=volume_bindings,
-        environment=env,
-    )
-
-    return new_container
+def run_cmd(cmd, ignore_errors=False):
+    """
+    Run a shell command and return (returncode, stdout, stderr).
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0 and not ignore_errors:
+            print(f"[ERROR] Command failed: {cmd}")
+            print(result.stderr.strip())
+        else:
+            print(f"[OK] {cmd}")
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except Exception as e:
+        print(f"[EXCEPTION] {cmd} -> {e}")
+        if ignore_errors:
+            return 0, "", str(e)
+        else:
+            return 1, "", str(e)
 
 
-def main():
-    client = docker.from_env()
-
-    base_dir = Path(__file__).resolve().parent.parent
-    logs_dir = base_dir / "logs"
-    logs_dir.mkdir(exist_ok=True)
-
-    # Netherlands local time
-    tz = pytz.timezone("Europe/Amsterdam")
-    now_local = datetime.now(tz)
-
-    log_data = {
-        "timestamp": now_local.isoformat(),
-        "action": "update_containers",
-        "results": []
+def update_cijferlijst():
+    start_time = datetime.datetime.now()
+    log_entry = {
+        "task": "update_cijferlijst",
+        "start_time": start_time.isoformat(),
+        "steps": [],
+        "final_status": "UNKNOWN"
     }
 
-    containers = client.containers.list(all=True)
+    # 1) Pull latest image
+    cmd_pull = f"docker pull {IMAGE_NAME}"
+    rc, out, err = run_cmd(cmd_pull)
+    log_entry["steps"].append({
+        "step": "docker_pull",
+        "command": cmd_pull,
+        "returncode": rc,
+        "stdout": out,
+        "stderr": err
+    })
+    if rc != 0:
+        log_entry["final_status"] = "FAILED_PULL"
+        return log_entry
 
-    for container in containers:
-        if container.name.lower() == "portainer":
-            continue
+    # 2) Stop existing container (ignore error if not running)
+    cmd_stop = f"docker stop {CONTAINER_NAME}"
+    rc, out, err = run_cmd(cmd_stop, ignore_errors=True)
+    log_entry["steps"].append({
+        "step": "docker_stop",
+        "command": cmd_stop,
+        "returncode": rc,
+        "stdout": out,
+        "stderr": err
+    })
 
-        image_tags = container.image.tags
-        image = image_tags[0] if image_tags else None
-        if not image:
-            continue
+    # 3) Remove existing container (ignore error if not exists)
+    cmd_rm = f"docker rm {CONTAINER_NAME}"
+    rc, out, err = run_cmd(cmd_rm, ignore_errors=True)
+    log_entry["steps"].append({
+        "step": "docker_rm",
+        "command": cmd_rm,
+        "returncode": rc,
+        "stdout": out,
+        "stderr": err
+    })
 
-        result = {
-            "container": container.name,
-            "old_image": image,
-            "status": "",
-            "duration_ms": 0
-        }
+    # 4) Run new container
+    cmd_run = (
+        f"docker run -d --name {CONTAINER_NAME} "
+        f"-p {HOST_PORT}:{CONTAINER_PORT} "
+        f"{IMAGE_NAME}"
+    )
+    rc, out, err = run_cmd(cmd_run)
+    log_entry["steps"].append({
+        "step": "docker_run",
+        "command": cmd_run,
+        "returncode": rc,
+        "stdout": out,
+        "stderr": err
+    })
 
-        start_time = time.time()
+    if rc == 0:
+        log_entry["final_status"] = "SUCCESS"
+        log_entry["new_container_id"] = out.strip()
+    else:
+        log_entry["final_status"] = "FAILED_RUN"
 
-        try:
-            print(f"\n[INFO] Pulling latest image for {container.name} ({image})")
-            client.images.pull(image)
+    end_time = datetime.datetime.now()
+    log_entry["end_time"] = end_time.isoformat()
+    log_entry["duration_seconds"] = (end_time - start_time).total_seconds()
 
-            print(f"[INFO] Recreating container {container.name}")
-            recreate_container(client, container)
+    return log_entry
 
-            result["status"] = "success"
 
-        except Exception as e:
-            result["status"] = f"error: {e}"
+def save_log(entry):
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    now = datetime.datetime.now()
+    filename = os.path.join(
+        LOGS_DIR,
+        f"update_{now.strftime('%Y%m%d-%H%M%S')}.json"
+    )
+    with open(filename, "w") as f:
+        json.dump(entry, f, indent=4)
 
-        finally:
-            result["duration_ms"] = int((time.time() - start_time) * 1000)
-            log_data["results"].append(result)
-
-    filename = logs_dir / f"update_{now_local.strftime('%Y%m%d_%H%M%S')}.json"
-    with filename.open("w") as f:
-        json.dump(log_data, f, indent=4)
-
-    print(f"\n✔ Update results written to: {filename}")
+    print(f"[UPDATE] Log saved → {filename}")
 
 
 if __name__ == "__main__":
-    main()
+    print("[UPDATE] Starting cijferlijst update...")
+    result = update_cijferlijst()
+    save_log(result)
+    print(f"[UPDATE] Final status: {result['final_status']}")
