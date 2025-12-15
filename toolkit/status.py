@@ -26,14 +26,14 @@ def get_container_status():
             "ports": c.attrs.get("NetworkSettings", {}).get("Ports", {})
         }
 
-        # Healthcheck (si existe)
+ 
         health = c.attrs.get("State", {}).get("Health")
         if health:
             info["health"] = health.get("Status")
         else:
             info["health"] = "no healthcheck"
 
-        # Marcar si es el contenedor principal que nos interesa
+
         info["is_cijferlijst"] = (c.name == TARGET_CONTAINER)
 
         data["containers"].append(info)

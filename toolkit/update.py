@@ -44,7 +44,7 @@ def update_cijferlijst():
         "final_status": "UNKNOWN"
     }
 
-    # 1) Pull latest image
+   
     cmd_pull = f"docker pull {IMAGE_NAME}"
     rc, out, err = run_cmd(cmd_pull)
     log_entry["steps"].append({
@@ -58,7 +58,7 @@ def update_cijferlijst():
         log_entry["final_status"] = "FAILED_PULL"
         return log_entry
 
-    # 2) Stop existing container (ignore error if not running)
+  
     cmd_stop = f"docker stop {CONTAINER_NAME}"
     rc, out, err = run_cmd(cmd_stop, ignore_errors=True)
     log_entry["steps"].append({
@@ -69,7 +69,7 @@ def update_cijferlijst():
         "stderr": err
     })
 
-    # 3) Remove existing container (ignore error if not exists)
+
     cmd_rm = f"docker rm {CONTAINER_NAME}"
     rc, out, err = run_cmd(cmd_rm, ignore_errors=True)
     log_entry["steps"].append({
@@ -80,7 +80,7 @@ def update_cijferlijst():
         "stderr": err
     })
 
-    # 4) Run new container
+    
     cmd_run = (
         f"docker run -d --name {CONTAINER_NAME} "
         f"-p {HOST_PORT}:{CONTAINER_PORT} "
