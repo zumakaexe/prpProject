@@ -4,7 +4,8 @@ import datetime
 import os
 
 LOGS_DIR = "logs"
-TARGET_CONTAINER = "cijferlijst"
+TARGET_CONTAINER = os.getenv("TARGET_CONTAINER", "cijferlijst")
+
 
 
 def get_container_status():
